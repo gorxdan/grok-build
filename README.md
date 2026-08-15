@@ -79,8 +79,11 @@ cargo check -p xai-grok-pager-bin            # fast validation
 ```
 
 The binary artifact is named `xai-grok-pager`; official installs ship it as
-`grok`. On first launch it opens your browser to authenticate — see the
-[authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
+`grok`. By default, first launch opens your browser to authenticate. If a
+supported third-party provider is selected with `GROK_PROVIDER` or
+`[models].provider_catalogs`, Grok adds its full agent-compatible catalog to
+`/model` and refreshes its `/models` endpoint at startup. See the
+[custom-model guide](crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md#provider-presets).
 
 ## Documentation
 

@@ -220,6 +220,48 @@ client_id = "0oa1b2c3d4e5f6g7h8i9"
 
 Add custom model endpoints to use alternative providers or self-hosted models.
 
+Common providers have built-in presets. Select one, set its key, and launch
+Grok:
+
+```sh
+export GROK_PROVIDER=glm
+export ZAI_API_KEY="..."
+grok
+```
+
+The GLM preset uses Z.AI's OpenAI Chat Completions coding endpoint. It includes
+an offline catalog and refreshes the provider's `/models` list at startup, with
+`glm-5.3` selected by default. GLM 5.3 and 5.2 expose `max`, `high`, and `low`
+through `/effort`; `max` is the default. `zai` and `zhipu` are aliases for
+`glm`.
+
+Set `GROK_PROVIDER` to `glm`, `kimi`, `minimax`, `openai`, `openrouter`, or
+`longcat`. Use `GROK_PROVIDER=auto` to add every preset whose key is set, or
+`GROK_PROVIDER=all` to add every catalog. If a selected provider's key is
+unavailable, authentication fails closed instead of opening the xAI login flow.
+
+For normal launches with no environment selector, persist the catalogs in
+`config.toml`. Preset values are defaults, so fields in a model table still
+win:
+
+```toml
+[models]
+default = "glm-5.3"
+provider_catalogs = ["all"]
+
+[model."glm-5.3"]
+provider = "glm"
+model = "glm-5.3"
+
+# Pin an older GLM 5.x release when needed.
+[model."glm-5.2"]
+provider = "glm"
+model = "glm-5.2"
+```
+
+See [Custom Models](11-custom-models.md#provider-presets) for every preset,
+environment variable, and override example.
+
 ```toml
 [model.my-model]
 model = "model-id"                    # model identifier sent to API
@@ -232,6 +274,7 @@ temperature = 0.7                     # sampling temperature (0.0-2.0)
 top_p = 0.95                          # nucleus sampling parameter
 max_completion_tokens = 8192          # max tokens per response
 context_window = 128000               # context window size (for auto-compact)
+api_backend = "chat_completions"      # chat_completions | responses | messages
 query_params = { api-version = "2026-07-22" } # query params appended to every request URL
 env_http_headers = { "X-Tenant" = "TENANT_TOKEN" }    # request headers from env vars, resolved at client build
 ```
@@ -712,6 +755,8 @@ The key ones. See the README for the complete list.
 | Variable | Description |
 |----------|-------------|
 | `XAI_API_KEY` | API key from console.x.ai |
+| `ZAI_API_KEY` | Z.AI key used by the GLM preset (`glm-5.3` by default) |
+| `GROK_PROVIDER` | Select provider catalogs (`auto`, `all`, `glm`, `kimi`, `minimax`, `openai`, `openrouter`, or `longcat`) |
 | `GROK_AUTH_PROVIDER_COMMAND` | External auth binary path |
 | `GROK_AUTH_PROVIDER_LABEL` | Display name on TUI login screen |
 | `GROK_AUTH_TOKEN_TTL` | Token lifetime in seconds |

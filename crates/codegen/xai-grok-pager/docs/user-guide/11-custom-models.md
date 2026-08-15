@@ -53,6 +53,104 @@ default = "grok-4.5"
 
 ---
 
+## Provider Presets
+
+Grok includes complete model catalogs and connection defaults for common
+third-party providers. Persist all of them once, then launch `grok` normally:
+
+```toml
+[models]
+default = "glm-5.3"
+provider_catalogs = ["all"]
+```
+
+`provider_catalogs` accepts `all`, `auto`, or any combination of the preset
+names below. `auto` installs every preset whose API-key environment variable is
+set. The equivalent one-launch selectors are `GROK_PROVIDER=all`,
+`GROK_PROVIDER=auto`, or `GROK_PROVIDER=<preset>`.
+
+| Preset | API key variable | Default model | API backend |
+|--------|------------------|---------------|-------------|
+| `glm` (`zai`, `zhipu`) | `ZAI_API_KEY` | `glm-5.3` | Chat Completions |
+| `kimi` | `KIMI_API_KEY` | `k3` | Chat Completions |
+| `minimax` | `MINIMAX_API_KEY` | `MiniMax-M3` | Responses |
+| `openai` | `OPENAI_API_KEY` | `gpt-5.6-sol` | Responses |
+| `openrouter` | `OPENROUTER_API_KEY` | `openrouter/owl-alpha` | Chat Completions |
+| `longcat` | `LONGCAT_API_KEY` | `LongCat-2.0` | Chat Completions |
+
+Each selected preset has an offline fallback catalog. At startup, Grok also
+queries the provider's standard `/models` endpoint when credentials are
+available and adds newly released IDs. OpenRouter discovery requests only
+text-output models with tool support. “All models” therefore means all models
+that can drive this tool-using chat agent; embedding, moderation, audio-only,
+image-generation, video, realtime, and other incompatible endpoint types are
+not shown.
+
+For a one-provider GLM setup:
+
+```bash
+export GROK_PROVIDER=glm
+export ZAI_API_KEY="..."
+grok
+```
+
+This selects `glm-5.3`, the latest GLM model, and adds every model returned by
+the Z.AI Coding Plan catalog plus the documented GLM 5.3 fallback. The preset
+uses `https://api.z.ai/api/coding/paas/v4` and Chat Completions.
+
+| Model | Context window | `/effort` levels |
+|-------|----------------|------------------|
+| `glm-5.3`, `glm-5.2` | 1,000,000 | `max` (default), `high`, `low` |
+| `k3`, `k3-256k` | 1,048,576 / 262,144 | `max`, `high` (default), `low` |
+| Current OpenAI reasoning models | Model-specific | Exact supported levels, including `none`, `minimal`, `xhigh`, or `max` where available |
+
+Use `/model glm-5.2 high` to switch model and effort together, or `/effort max`
+to change the active GLM model's effort without switching models.
+
+To add only providers for which a key is configured:
+
+```bash
+export GROK_PROVIDER=auto
+export ZAI_API_KEY="..."
+export KIMI_API_KEY="..."
+grok -p "Summarize this repository"
+```
+
+Catalog visibility is independent of authentication when `all` is selected.
+Choosing a model whose key is unavailable fails closed; Grok never sends an xAI
+session token to a third-party endpoint. A ChatGPT login is not an
+`OPENAI_API_KEY`; OpenAI API models require a Platform API key.
+
+Presets can also be referenced in `config.toml`. `provider` is shorthand for
+`model_provider`, and fields in `[model.*]` override preset defaults:
+
+```toml
+[models]
+default = "glm-5.3"
+provider_catalogs = ["all"]
+
+[model."glm-5.3"]
+provider = "glm"
+model = "glm-5.3"
+
+[model."glm-5.2"]
+provider = "glm"
+model = "glm-5.2"
+
+[model.glm-via-gateway]
+provider = "glm"
+base_url = "https://gateway.example/v1"
+env_key = "GATEWAY_API_KEY"
+context_window = 500000
+```
+
+The same preset may be reused by several model entries. For a custom shared
+provider, define `[model_providers.<id>]` and reference it with
+`model_provider = "<id>"`; see [Request Query Parameters](#request-query-parameters)
+for an inheritance example.
+
+---
+
 ## Supported API Backends
 
 Grok supports three API backends. Set `api_backend` in your `[model.*]` config to choose which protocol the model uses:
