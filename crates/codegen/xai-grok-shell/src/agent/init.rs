@@ -34,7 +34,8 @@ pub fn bootstrap(
     crate::managed_config::managed_policy_gate()?;
     let cfg = {
         let _timer = crate::instrumentation_timer!("startup.bootstrap.resolve_config");
-        let cfg = resolve_config(&cfg, auth_manager);
+        let mut cfg = resolve_config(&cfg, auth_manager);
+        super::provider_presets::ProviderPreset::refresh_catalogs(&mut cfg);
         cfg.validate_model_filters()?;
         cfg
     };

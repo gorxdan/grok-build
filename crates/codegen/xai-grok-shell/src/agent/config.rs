@@ -2,7 +2,8 @@ use crate::agent::auth_method::ModelByok;
 use crate::agent::model_providers::{
     ModelProviderConfig, auth_config_issues, model_provider_auth_name, parse_model_providers,
 };
-use crate::auth::{AuthManager, GrokComConfig, OidcAuthConfig};
+use crate::agent::provider_presets::ProviderPreset;
+use crate::auth::{AuthManager, GrokComConfig, OidcAuthConfig, PreferredAuthMethod};
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::{config::StorageMode, sampling::ApiBackend, tools::config::ShellToolsetConfig};
 use agent_client_protocol as acp;
@@ -1025,6 +1026,10 @@ pub struct DiagnosticsConfig {
 pub struct ModelsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    /// Built-in third-party model catalogs to install. Values are provider
+    /// names, `auto` (providers with configured environment keys), or `all`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_catalogs: Vec<String>,
     /// The pre-campaign `models.default` (merged user/managed/requirements)
     /// captured when a campaign is overriding the default, so model resolution can
     /// recover if the campaign points at a model missing from the catalog. `None`
@@ -1962,11 +1967,12 @@ impl Config {
     pub fn new_from_toml_cfg(raw_config: &toml::Value) -> Result<Self, String> {
         let raw_config = &Self::expand_auth_alias(raw_config);
         let super::config_model_override_parse::ParsedModelOverrides {
-            models: config_models,
+            models: mut config_models,
             warnings: config_warnings,
         } = super::config_model_override_parse::parse_model_overrides(raw_config);
         let (mut auth_providers, auth_provider_warnings) = parse_auth_providers(raw_config);
-        let (model_providers, mut model_provider_warnings) = parse_model_providers(raw_config);
+        let (mut model_providers, mut model_provider_warnings) = parse_model_providers(raw_config);
+        ProviderPreset::install_model_defaults(&mut config_models, &mut model_providers);
         for (id, provider) in &model_providers {
             if let Some(auth) = &provider.auth {
                 let synthetic = model_provider_auth_name(id);
@@ -2014,6 +2020,7 @@ impl Config {
         config.config_warnings = config_warnings;
         config.auth_providers = auth_providers;
         config.model_providers = model_providers;
+        config.apply_configured_provider_catalogs()?;
         config.config_warnings.extend(auth_provider_warnings);
         config.config_warnings.extend(model_provider_warnings);
         unrecognized_keys.sort();
@@ -2106,6 +2113,7 @@ impl Config {
         config.image_description_model = model_overrides.image_description;
         config.prompt_suggest_model_pin = model_overrides.prompt_suggestion;
         config.apply_env_overrides();
+        config.apply_provider_env_overrides()?;
         Ok(config)
     }
     /// Populate trust-independent `#[serde(skip)]` subagent base fields.
@@ -2308,6 +2316,104 @@ impl Config {
         if let Some(mode) = env_telemetry_mode("GROK_TELEMETRY_ENABLED") {
             self.features.telemetry = Some(mode);
         }
+    }
+    fn apply_configured_provider_catalogs(&mut self) -> Result<(), String> {
+        if self.models.provider_catalogs.is_empty() {
+            return Ok(());
+        }
+        let configured = self.models.provider_catalogs.clone();
+        let presets = Self::parse_provider_catalog_selection(
+            configured.iter().map(String::as_str),
+            "models.provider_catalogs",
+        )?;
+        self.install_provider_catalogs(&presets, false, true);
+        Ok(())
+    }
+    fn parse_provider_catalog_selection<'a>(
+        values: impl IntoIterator<Item = &'a str>,
+        source: &str,
+    ) -> Result<Vec<ProviderPreset>, String> {
+        let mut selected = Vec::new();
+        for raw in values {
+            let value = raw.trim();
+            let presets: Vec<_> = if value.eq_ignore_ascii_case("all") {
+                ProviderPreset::ALL.into_iter().collect()
+            } else if value.eq_ignore_ascii_case("auto") {
+                ProviderPreset::ALL
+                    .into_iter()
+                    .filter(|provider| provider.has_env_credentials())
+                    .collect()
+            } else {
+                vec![ProviderPreset::from_name(value).ok_or_else(|| {
+                    format!(
+                        "unsupported {source} value {raw:?}; expected one of: auto, all, glm, kimi, minimax, openai, openrouter, longcat"
+                    )
+                })?]
+            };
+            for preset in presets {
+                if !selected.contains(&preset) {
+                    selected.push(preset);
+                }
+            }
+        }
+        Ok(selected)
+    }
+    fn install_provider_catalogs(
+        &mut self,
+        presets: &[ProviderPreset],
+        override_default: bool,
+        allow_uncredentialed_default: bool,
+    ) {
+        let defaults: Vec<_> = presets
+            .iter()
+            .copied()
+            .map(|preset| {
+                let model = preset
+                    .install_selected_models(&mut self.config_models, &mut self.model_providers);
+                (preset, model)
+            })
+            .collect();
+        if defaults.is_empty() || (!override_default && self.models.default.is_some()) {
+            return;
+        }
+
+        let selected = defaults
+            .iter()
+            .find(|(preset, _)| preset.has_env_credentials())
+            .or_else(|| allow_uncredentialed_default.then(|| &defaults[0]));
+        if let Some((_, model)) = selected {
+            self.models.default = Some(model.clone());
+            self.grok_com_config.preferred_method = Some(PreferredAuthMethod::ApiKey);
+        }
+    }
+    fn apply_provider_env_overrides(&mut self) -> Result<(), String> {
+        use super::provider_presets::GROK_PROVIDER_ENV;
+
+        let Some(raw_provider) = std::env::var_os(GROK_PROVIDER_ENV) else {
+            return Ok(());
+        };
+
+        let raw_provider = raw_provider.into_string().map_err(|_| {
+            format!("{GROK_PROVIDER_ENV} must contain a valid Unicode provider name")
+        })?;
+        if raw_provider.trim().eq_ignore_ascii_case("auto") {
+            let presets =
+                Self::parse_provider_catalog_selection(std::iter::once("auto"), GROK_PROVIDER_ENV)?;
+            self.install_provider_catalogs(&presets, false, false);
+            return Ok(());
+        }
+        if raw_provider.trim().eq_ignore_ascii_case("all") {
+            self.install_provider_catalogs(&ProviderPreset::ALL, true, true);
+            return Ok(());
+        }
+
+        let provider = ProviderPreset::from_name(&raw_provider).ok_or_else(|| {
+            format!(
+                "unsupported {GROK_PROVIDER_ENV} value {raw_provider:?}; expected one of: auto, all, glm, kimi, minimax, openai, openrouter, longcat"
+            )
+        })?;
+        self.install_provider_catalogs(&[provider], true, true);
+        Ok(())
     }
     pub(crate) fn is_telemetry_enabled(&self) -> bool {
         self.resolve_telemetry_mode().value.is_enabled()
@@ -3993,6 +4099,7 @@ pub struct ConfigModelOverride {
     /// this model's bearer token. Static `api_key` / `env_key` win when both
     /// are set.
     pub auth_provider: Option<String>,
+    #[serde(alias = "provider")]
     pub model_provider: Option<String>,
     pub api_base_url: Option<String>,
     pub max_completion_tokens: Option<u32>,
